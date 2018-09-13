@@ -2,16 +2,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import Foundation
 import AuthenticationServices
+import Foundation
 import RxSwift
 import RxCocoa
+import Storage
 
 @available(iOS 12, *)
 protocol CredentialProviderViewProtocol: class, AlertControllerView {
     var extensionContext: ASCredentialProviderExtensionContext { get }
 
     func displayWelcome()
+    func displayItemList()
 }
 
 @available(iOS 12, *)
@@ -20,9 +22,12 @@ class CredentialProviderPresenter {
 
     private let dispatcher: Dispatcher
     private let accountStore: AccountStore
+    private let telemetryStore: TelemetryStore
+    private let userDefaultStore: UserDefaultStore
+    private let dataStore: DataStore
+    private let telemetryActionHandler: TelemetryActionHandler
     private let credentialProviderStore: CredentialProviderStore
     private let autoLockStore: AutoLockStore
-    private let dataStore: DataStore
     private let disposeBag = DisposeBag()
 
     private var dismissObserver: AnyObserver<Void> {
@@ -34,15 +39,21 @@ class CredentialProviderPresenter {
     init(view: CredentialProviderViewProtocol,
          dispatcher: Dispatcher = .shared,
          accountStore: AccountStore = .shared,
+         telemetryStore: TelemetryStore = .shared,
+         userDefaultStore: UserDefaultStore = .shared,
+         dataStore: DataStore = .shared,
+         telemetryActionHandler: TelemetryActionHandler = .shared,
          credentialProviderStore: CredentialProviderStore = .shared,
-         autoLockStore: AutoLockStore = .shared,
-         dataStore: DataStore = .shared) {
+         autoLockStore: AutoLockStore = .shared) {
         self.view = view
         self.dispatcher = dispatcher
         self.accountStore = accountStore
+        self.telemetryStore = telemetryStore
+        self.userDefaultStore = userDefaultStore
+        self.dataStore = dataStore
+        self.telemetryActionHandler = telemetryActionHandler
         self.credentialProviderStore = credentialProviderStore
         self.autoLockStore = autoLockStore
-        self.dataStore = dataStore
 
         Observable.combineLatest(self.accountStore.oauthInfo, self.accountStore.profile)
             .bind { [weak self] (oauthInfo, profile) in
@@ -72,6 +83,10 @@ class CredentialProviderPresenter {
                 }
             })
             .disposed(by: self.disposeBag)
+
+        self.dispatcher.dispatch(action: LifecycleAction.foreground)
+        self.dispatcher.dispatch(action: DataStoreAction.unlock)
+        self.startTelemetry()
     }
 
     func extensionConfigurationRequested() {
@@ -114,13 +129,14 @@ class CredentialProviderPresenter {
                         self?.dispatcher.dispatch(action: CredentialProviderAction.authenticationRequested)
                         self?.view?.displayWelcome()
                     } else {
-                        guard let dismissObserver = self?.dismissObserver else { return }
-                        self?.view?.displayAlertController(buttons: [
-                                AlertActionButtonConfiguration(title: "OK", tapObserver: dismissObserver, style: .default)
-                            ],
-                                                          title: "Credential list not available yet",
-                                                          message: "Please check back later",
-                                                          style: .alert)
+                        self?.view?.displayItemList()
+//                        guard let dismissObserver = self?.dismissObserver else { return }
+//                        self?.view?.displayAlertController(buttons: [
+//                                AlertActionButtonConfiguration(title: "OK", tapObserver: dismissObserver, style: .default)
+//                            ],
+//                                                          title: "Credential list not available yet",
+//                                                          message: "Please check back later",
+//                                                          style: .alert)
                     }
                 }
                 .disposed(by: self.disposeBag)
@@ -153,5 +169,16 @@ extension CredentialProviderPresenter {
                             userInfo: nil)
 
         self.view?.extensionContext.cancelRequest(withError: error)
+    }
+}
+
+@available(iOS 12, *)
+extension CredentialProviderPresenter {
+    fileprivate func startTelemetry() {
+        Observable.combineLatest(self.telemetryStore.telemetryFilter, self.userDefaultStore.recordUsageData)
+            .filter { $0.1 }
+            .map { $0.0 }
+            .bind(to: self.telemetryActionHandler.telemetryActionListener)
+            .disposed(by: self.disposeBag)
     }
 }
